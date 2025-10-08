@@ -15,10 +15,8 @@
 // threshold. It does not matter how long it takes to reach the threshold, but the
 // failures do need to be consecutive.
 //
-//
 // When wrapping blocks of code with a Breaker's Call() function, a time out can be
 // specified. If the time out is reached, the breaker's Fail() function will be called.
-//
 //
 // Other types of circuit breakers can be easily built by creating a Breaker and
 // adding a custom TripFunc. A TripFunc is called when a Breaker Fail()s and receives
@@ -27,7 +25,6 @@
 //
 // The package also provides a wrapper around an http.Client that wraps all of
 // the http.Client functions with a Breaker.
-//
 package circuit
 
 import (
@@ -115,7 +112,13 @@ type Breaker struct {
 	eventReceivers []chan BreakerEvent
 	listeners      []chan ListenerEvent
 	backoffLock    sync.Mutex
+	// Time of the last BreakerReset event we sent (for periodic re-emission).
+	lastRecoveryEvent time.Time
 }
+
+// RecoveryReemitInterval is how often we re-emit a "BreakerReset" event
+// while the breaker remains closed.
+const RecoveryReemitInterval = 30 * time.Second
 
 // Options holds breaker configuration options.
 type Options struct {
@@ -154,11 +157,12 @@ func NewBreakerWithOptions(options *Options) *Breaker {
 	}
 
 	return &Breaker{
-		BackOff:     options.BackOff,
-		Clock:       options.Clock,
-		ShouldTrip:  options.ShouldTrip,
-		nextBackOff: options.BackOff.NextBackOff(),
-		counts:      newWindow(options.WindowTime, options.WindowBuckets),
+		BackOff:           options.BackOff,
+		Clock:             options.Clock,
+		ShouldTrip:        options.ShouldTrip,
+		nextBackOff:       options.BackOff.NextBackOff(),
+		counts:            newWindow(options.WindowTime, options.WindowBuckets),
+		lastRecoveryEvent: options.Clock.Now(),
 	}
 }
 
@@ -307,6 +311,13 @@ func (cb *Breaker) Success() {
 	}
 	atomic.StoreInt64(&cb.consecFailures, 0)
 	cb.counts.Success()
+	if cb.state() == closed {
+		if time.Since(cb.lastRecoveryEvent) >= RecoveryReemitInterval {
+		// Send the BreakerReset event again
+		cb.sendEvent(BreakerReset)
+		// Update the timestamp so it won't fire again immediately
+		cb.lastRecoveryEvent = cb.Clock.Now()
+	}
 }
 
 // ErrorRate returns the current error rate of the Breaker, expressed as a floating
