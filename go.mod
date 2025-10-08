@@ -1,4 +1,4 @@
-module github.com/rubyist/circuitbreaker
+module github.com/latikaVashishtha/circuitbreaker
 
 go 1.21.6
 
